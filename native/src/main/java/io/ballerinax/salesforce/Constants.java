@@ -56,4 +56,5 @@ public class Constants {
     public static final String UNDELETE = "UNDELETE";
     
     public static final String IS_SAND_BOX = "isSandBox";
+    public static final String LAST_SEEN_REPLAY_IDS = "last_seen_replay_ids";
 }
