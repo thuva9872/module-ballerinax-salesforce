@@ -40,6 +40,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
@@ -48,6 +50,7 @@ import java.util.stream.Collectors;
 import static io.ballerinax.salesforce.Constants.CONSUMER_SERVICES;
 import static io.ballerinax.salesforce.Constants.DISPATCHERS;
 import static io.ballerinax.salesforce.Constants.IS_SAND_BOX;
+import static io.ballerinax.salesforce.Constants.LAST_SEEN_REPLAY_IDS;
 import static io.ballerinax.salesforce.Constants.REPLAY_FROM;
 
 /**
@@ -74,6 +77,7 @@ public class ListenerUtil {
         listener.addNativeData(DISPATCHERS, new HashMap<BObject, DispatcherService>());
         listener.addNativeData(SUBSCRIPTIONS, new HashMap<BObject, TopicSubscription>());
         listener.addNativeData(REPLAY_FROM, replayFrom);
+        listener.addNativeData(LAST_SEEN_REPLAY_IDS, new ConcurrentHashMap<String, Long>());
         listener.addNativeData(API_VERSION, apiVersion.getValue());
         long connectionTimeoutMs = connectionTimeout.value().multiply(java.math.BigDecimal.valueOf(1000)).longValue();
         long readTimeoutMs = readTimeout.value().multiply(java.math.BigDecimal.valueOf(1000)).longValue();
@@ -231,7 +235,10 @@ public class ListenerUtil {
         Map<BObject, TopicSubscription> subscriptionMap =
                 (Map<BObject, TopicSubscription>) listener.getNativeData(SUBSCRIPTIONS);
 
-        long replayFrom = (Integer) listener.getNativeData(REPLAY_FROM);
+        long configuredReplayFrom = (Integer) listener.getNativeData(REPLAY_FROM);
+        @SuppressWarnings("unchecked")
+        ConcurrentMap<String, Long> lastSeenReplayIds =
+                (ConcurrentMap<String, Long>) listener.getNativeData(LAST_SEEN_REPLAY_IDS);
 
         for (BObject service : services) {
             DispatcherService dispatcherService = serviceDispatcherMap.get(service);
@@ -245,7 +252,11 @@ public class ListenerUtil {
                         null);
             }
 
-            Consumer<Map<String, Object>> consumer = event -> injectEvent(dispatcherService, event);
+            long replayFrom = lastSeenReplayIds.getOrDefault(channelName, configuredReplayFrom);
+            Consumer<Map<String, Object>> consumer = event -> {
+                injectEvent(dispatcherService, event);
+                trackLastSeenReplayId(lastSeenReplayIds, channelName, event);
+            };
 
             try {
                 TopicSubscription subscription = connector.subscribe(channelName, replayFrom, consumer)
@@ -257,6 +268,19 @@ public class ListenerUtil {
             }
         }
         return null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void trackLastSeenReplayId(ConcurrentMap<String, Long> lastSeenReplayIds,
+            String channelName, Map<String, Object> eventData) {
+        Object eventMeta = eventData.get("event");
+        if (!(eventMeta instanceof Map)) {
+            return;
+        }
+        Object replayIdObj = ((Map<String, Object>) eventMeta).get("replayId");
+        if (replayIdObj instanceof Number) {
+            lastSeenReplayIds.put(channelName, ((Number) replayIdObj).longValue());
+        }
     }
 
     public static Object detachService(BObject listener, BObject service) {
