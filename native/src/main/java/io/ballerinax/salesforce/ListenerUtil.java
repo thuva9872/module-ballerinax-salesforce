@@ -180,7 +180,9 @@ public class ListenerUtil {
         try {
             params = tokenProvider.login();
         } catch (Exception e) {
-            throw sfdcError(e.getMessage(), e.getCause());
+            BError loginError = sfdcError(e.getMessage(), e.getCause());
+            notifyAllDispatchersOnError(listener, loginError);
+            return loginError;
         }
 
         return startConnector(params, tokenProvider, listener);
@@ -254,7 +256,12 @@ public class ListenerUtil {
 
             long replayFrom = lastSeenReplayIds.getOrDefault(channelName, configuredReplayFrom);
             Consumer<Map<String, Object>> consumer = event -> {
-                injectEvent(dispatcherService, event);
+                try {
+                    injectEvent(dispatcherService, event);
+                } catch (Exception e) {
+                    BError error = sfdcError(e.getMessage(), e.getCause());
+                    dispatcherService.invokeOnError(error);
+                }
                 trackLastSeenReplayId(lastSeenReplayIds, channelName, event);
             };
 
@@ -264,7 +271,9 @@ public class ListenerUtil {
                 subscriptionMap.put(service, subscription);
             } catch (Exception e) {
                 connector.stop();
-                return sfdcError(e.getMessage(), e.getCause());
+                BError subscriptionError = sfdcError(e.getMessage(), e.getCause());
+                dispatcherService.invokeOnError(subscriptionError);
+                return subscriptionError;
             }
         }
         return null;
@@ -280,6 +289,27 @@ public class ListenerUtil {
         Object replayIdObj = ((Map<String, Object>) eventMeta).get("replayId");
         if (replayIdObj instanceof Number) {
             lastSeenReplayIds.put(channelName, ((Number) replayIdObj).longValue());
+        }
+    }
+
+    public static void notifyServicesOnError(BObject listener, BString message) {
+        notifyAllDispatchersOnError(listener, sfdcError(message.getValue(), null));
+    }
+
+    private static void notifyAllDispatchersOnError(BObject listener, BError error) {
+        @SuppressWarnings("unchecked")
+        ArrayList<BObject> services = (ArrayList<BObject>) listener.getNativeData(CONSUMER_SERVICES);
+        @SuppressWarnings("unchecked")
+        Map<BObject, DispatcherService> serviceDispatcherMap =
+                (Map<BObject, DispatcherService>) listener.getNativeData(DISPATCHERS);
+        if (services == null || serviceDispatcherMap == null) {
+            return;
+        }
+        for (BObject service : services) {
+            DispatcherService dispatcher = serviceDispatcherMap.get(service);
+            if (dispatcher != null) {
+                dispatcher.invokeOnError(error);
+            }
         }
     }
 
